@@ -19,9 +19,16 @@ import click
 from botocore.exceptions import ClientError
 from clickclick import Action, info
 
-from .common import override_ephemeral_block_devices, \
-    dump_user_data_for_taupage, setup_sns_topics_for_alarm, \
-    create_auto_recovery_alarm, ensure_instance_profile
+from .common import ec2_client, list_instances, \
+    override_ephemeral_block_devices, \
+    get_user_data, dump_user_data_for_taupage, \
+    setup_sns_topics_for_alarm, create_auto_recovery_alarm, \
+    get_instance_profile, ensure_instance_profile
+
+
+def find_security_group_by_name(ec2: object, sg_name: str) -> dict:
+    resp = ec2.describe_security_groups(GroupNames=[sg_name])
+    return resp['SecurityGroups'][0]
 
 
 def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
@@ -32,7 +39,7 @@ def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
     description = 'Allow Cassandra nodes to talk to each other on port 7001'
     for region, ips in node_ips.items():
         with Action('Configuring Security Group in {}..'.format(region)):
-            ec2 = boto3.client('ec2', region)
+            ec2 = ec2_client(region)
             resp = ec2.describe_vpcs()
             # TODO: support more than one VPC..
             vpc = resp['Vpcs'][0]
@@ -72,10 +79,7 @@ def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
 
             # if we can find the Odd security group, authorize SSH access from it
             try:
-                resp = ec2.describe_security_groups(
-                    GroupNames=['Odd (SSH Bastion Host)']
-                )
-                odd_sg = resp['SecurityGroups'][0]
+                odd_sg = find_security_group_by_name(ec2, 'Odd (SSH Bastion Host)')
                 odd_ingress_rule = {
                     'IpProtocol': 'tcp',
                     'FromPort': 22,  # port range: From-To
@@ -244,7 +248,7 @@ def allocate_ip_addresses(
     '''
     for region, subnets in region_subnets.items():
         with Action('Allocating IP addresses in {}..'.format(region)) as act:
-            ec2 = boto3.client('ec2', region_name=region)
+            ec2 = ec2_client(region)
 
             for ip in generate_private_ip_addresses(ec2, subnets, cluster_size):
                 address = {'PrivateIp': ip}
@@ -282,7 +286,7 @@ def get_subnets(prefix_filter: str, regions: list) -> dict:
     '''
     subnets = collections.defaultdict(list)
     for region in regions:
-        ec2 = boto3.client('ec2', region)
+        ec2 = ec2_client(region)
         resp = ec2.describe_subnets()
         sorted_subnets = sorted(
             resp['Subnets'],
@@ -345,6 +349,14 @@ def setup_dns_records(cluster_name: str, hosted_zone: str, node_ips: dict):
             )
 
 
+def list_all_seed_node_ips(seed_nodes: dict) -> list:
+    return [
+        ip['_defaultIp']
+        for region, ips in seed_nodes.items()
+        for ip in ips
+    ]
+
+
 def generate_taupage_user_data(options: dict) -> str:
     '''
     Generate Taupage user data to start a Cassandra node
@@ -354,11 +366,7 @@ def generate_taupage_user_data(options: dict) -> str:
     truststore_base64 = base64.b64encode(options['truststore'])
 
     # seed nodes across all regions
-    all_seeds = [
-        ip['_defaultIp']
-        for region, ips in options['seed_nodes'].items()
-        for ip in ips
-    ]
+    all_seeds = list_all_seed_node_ips(options['seed_nodes'])
     data = {
         'runtime': 'Docker',
         'source': options['docker_image'],
@@ -428,7 +436,7 @@ def launch_instance(region: str, ip: dict, ami: object, subnet: dict,
         region
     )
     with Action(msg) as act:
-        ec2 = boto3.client('ec2', region_name=region)
+        ec2 = ec2_client(region)
 
         mappings = ami.block_device_mappings
         block_devices = override_ephemeral_block_devices(mappings)
@@ -686,13 +694,121 @@ def create_cluster(options: dict):
         # Undo stack sounds like a natural choice.
         #
         for region, sg in security_groups.items():
-            ec2 = boto3.client('ec2', region)
+            ec2 = ec2_client(region)
             info('Cleaning up security group: {}'.format(sg['GroupId']))
             ec2.delete_security_group(GroupId=sg['GroupId'])
 
         if options['use_dmz']:
             for region, ips in node_ips.items():
-                ec2 = boto3.client('ec2', region)
+                ec2 = ec2_client(region)
+                for ip in ips:
+                    info('Releasing IP address: {}'.format(ip['PublicIp']))
+                    ec2.release_address(AllocationId=ip['AllocationId'])
+
+        raise
+
+
+def extend_cluster(options: dict):
+    options['regions'] = [options['region']]
+
+    ec2 = ec2_client(options['region'])
+    running_instances = [
+        i
+        for i in list_instances(ec2, options['cluster_name'])
+        if i['State']['Name'] == 'running'
+    ]
+    if not running_instances:
+        msg = "Could not find any running EC2 instances for {} in {}".format(
+            options['cluster_name'],
+            options['region']
+        )
+        raise click.UsageError(msg)
+
+    # TODO: don't override docker image?
+    options = validate_artifact_version(options)
+    options = read_environment(options)
+
+    # List of IP addresses by region
+    node_ips = collections.defaultdict(list)
+
+    try:
+        # TODO: get it from a running instance details?
+        taupage_amis = find_taupage_amis(options['regions'])
+
+        subnets = get_subnets(
+            'dmz-' if options['use_dmz'] else 'internal-',
+            options['regions']
+        )
+        allocate_ip_addresses(
+            subnets, options['cluster_size'], node_ips,
+            take_elastic_ips=options['use_dmz']
+        )
+
+        if options['sns_topic'] or options['sns_email']:
+            alarm_topics = setup_sns_topics_for_alarm(
+                options['regions'],
+                options['sns_topic'],
+                options['sns_email']
+            )
+        else:
+            alarm_topics = {}
+
+        if options.get('hosted_zone'):
+            setup_dns_records(
+                options['cluster_name'],
+                options['hosted_zone'],
+                node_ips
+            )
+
+        cluster_sg = find_security_group_by_name(ec2, options['cluster_name'])
+        security_groups = {
+            options['region']: cluster_sg
+        }
+
+        # We should have up to 3 seeds nodes per DC
+        seed_count = min(options['cluster_size'], 3)
+        seed_nodes = pick_seed_node_ips(node_ips, seed_count)
+
+        options = dict(
+            options,
+            seed_count=seed_count,
+            seed_nodes=seed_nodes
+        )
+
+        user_data = get_user_data(ec2, running_instances[0]['InstanceId'])
+
+        env = user_data['environment']
+        env['AUTO_BOOTSTRAP'] = 'false'
+        env['DC_SUFFIX'] = options['dc_suffix']
+
+        new_seeds = list_all_seed_node_ips(seed_nodes)
+        env['SEEDS'] = "{},{}".format(','.join(new_seeds), env['SEEDS'])
+
+        instance_profile = get_instance_profile(options['cluster_name'])
+
+        options = dict(
+            options,
+            node_ips=node_ips,
+            security_groups=security_groups,
+            taupage_amis=taupage_amis,
+            subnets=subnets,
+            alarm_topics=alarm_topics,
+            user_data=user_data,
+            instance_profile=instance_profile
+        )
+        launch_seed_nodes(options)
+
+        # TODO: make sure all seed nodes are up
+        launch_normal_nodes(options)
+
+        print_success_message(options)
+
+    except:
+        print_failure_message()
+
+        if options['use_dmz']:
+            for region, ips in node_ips.items():
+                ec2 = ec2_client(region)
                 for ip in ips:
                     info('Releasing IP address: {}'.format(ip['PublicIp']))
                     ec2.release_address(AllocationId=ip['AllocationId'])

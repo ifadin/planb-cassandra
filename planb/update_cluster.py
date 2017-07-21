@@ -3,13 +3,10 @@ from datetime import datetime
 import subprocess
 import requests
 import logging
-import base64
 import click
-import yaml
 import time
 import sys
 import re
-import io
 import os
 
 # TODO: can we avoid the explicit list here?
@@ -127,17 +124,6 @@ def find_instance_from_volume(
         return None
     instance_id = attachments[0]['InstanceId']
     return get_instance(ec2, instance_id)
-
-
-def get_user_data(ec2: object, instance_id: str) -> dict:
-    resp = ec2.describe_instance_attribute(
-        InstanceId=instance_id,
-        Attribute='userData'
-    )
-    raw_bytes = base64.b64decode(resp['UserData']['Value'])
-    data = str(raw_bytes, 'UTF-8')
-    stream = io.StringIO(data)
-    return yaml.safe_load(stream)
 
 
 def is_api_termination_disabled(ec2: object, instance_id: str) -> dict:

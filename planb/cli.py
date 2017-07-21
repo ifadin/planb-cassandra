@@ -4,7 +4,7 @@ import logging
 
 from .common import ec2_client, list_instances
 from .show_cluster import show_instances
-from .create_cluster import create_cluster
+from .create_cluster import create_cluster, extend_cluster
 from .update_cluster import update_cluster
 
 
@@ -19,6 +19,10 @@ def configure_logging(level):
 @click.option('--debug', is_flag=True, default=False)
 def cli(debug: bool):
     configure_logging(logging.DEBUG if debug else logging.INFO)
+
+
+sns_topic_help = 'SNS topic name to send Auto-Recovery notifications to'
+sns_email_help = 'Email address to subscribe to Auto-Recovery SNS topic'
 
 
 @cli.command()
@@ -37,8 +41,8 @@ def cli(debug: bool):
 @click.option('--artifact-name', help='Pierone artifact name to use (default: planb-cassandra-3.0)')
 @click.option('--docker-image', help='Docker image to use (default: latest planb-cassandra-3.0)')
 @click.option('--environment', '-e', multiple=True)
-@click.option('--sns-topic', help='SNS topic name to send Auto-Recovery notifications to')
-@click.option('--sns-email', help='Email address to subscribe to Auto-Recovery SNS topic')
+@click.option('--sns-topic', help=sns_topic_help)
+@click.option('--sns-email', help=sns_email_help)
 def create(regions: list,
            cluster_name: str,
            cluster_size: int,
@@ -78,8 +82,45 @@ def create(regions: list,
     create_cluster(options=locals())
 
 
-sns_topic_help = 'SNS topic name to send Auto-Recovery notifications to'
-sns_email_help = 'Email address to subscribe to Auto-Recovery SNS topic'
+@cli.command()
+@click.option('--region', type=str, required=True)
+@click.option('--cluster-name', type=str, required=True)
+@click.option('--cluster-size', default=3, type=int, help='number of nodes per region, default: 3')
+@click.option('--dc-suffix', type=str, required=True)
+@click.option('--num-tokens', default=256, type=int, help='number of virtual nodes per node, default: 256')
+@click.option('--instance-type', default='t2.medium', help='default: t2.medium')
+@click.option('--volume-type', default='gp2', help='gp2 (default) | io1 | standard')
+@click.option('--volume-size', default=16, type=int, help='in GB, default: 16')
+@click.option('--volume-iops', default=100, type=int, help='for type io1, default: 100')
+@click.option('--no-termination-protection', is_flag=True, default=False)
+@click.option('--use-dmz', is_flag=True, default=False, help='deploy into DMZ subnets using Public IP addresses')
+#@click.option('--hosted-zone', help='create SRV records in this Hosted Zone')
+#@click.option('--scalyr-key')
+@click.option('--artifact-name', help='Pierone artifact name to use (default: planb-cassandra-3.0)')
+@click.option('--docker-image', help='Docker image to use (default: latest planb-cassandra-3.0)')
+@click.option('--environment', '-e', multiple=True)
+@click.option('--sns-topic', help=sns_topic_help)
+@click.option('--sns-email', help=sns_email_help)
+def extend(region: str,
+           cluster_name: str,
+           cluster_size: int,
+           dc_suffix: str,
+           num_tokens: int,
+           instance_type: str,
+           volume_type: str,
+           volume_size: int,
+           volume_iops: int,
+           no_termination_protection: bool,
+           use_dmz: bool,
+#           hosted_zone: str,
+#           scalyr_key: str,
+           artifact_name: str,
+           docker_image: str,
+           environment: list,
+           sns_topic: str,
+           sns_email: str):
+
+    extend_cluster(options=locals())
 
 
 @cli.command()
