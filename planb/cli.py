@@ -87,7 +87,7 @@ def create(regions: list,
 @click.option('--to-region', type=str, required=True)
 @click.option('--cluster-name', type=str, required=True)
 @click.option('--ring-size', type=int, required=True)
-@click.option('--dc-suffix', type=str, required=True)
+@click.option('--dc-suffix', default='', type=str)
 @click.option('--num-tokens', default=256, type=int, help='number of virtual nodes per node, default: 256')
 @click.option('--instance-type', default='t2.medium', help='default: t2.medium')
 @click.option('--volume-type', default='gp2', help='gp2 (default) | io1 | standard')
