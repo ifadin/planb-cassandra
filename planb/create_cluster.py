@@ -23,7 +23,7 @@ from .common import ec2_client, list_instances, \
     override_ephemeral_block_devices, \
     get_user_data, dump_user_data_for_taupage, \
     setup_sns_topics_for_alarm, create_auto_recovery_alarm, \
-    get_instance_profile, ensure_instance_profile
+    ensure_instance_profile
 
 
 def find_security_group_by_name(ec2: object, sg_name: str) -> dict:
@@ -31,73 +31,120 @@ def find_security_group_by_name(ec2: object, sg_name: str) -> dict:
     return resp['SecurityGroups'][0]
 
 
+def create_security_group(region: str, ips: list, use_dmz: bool,
+                          cluster_name: str, node_ips: dict) -> dict:
+    description = 'Allow Cassandra nodes to talk to each other on port 7001'
+    with Action('Creating Security Group in {}..'.format(region)):
+        ec2 = ec2_client(region)
+        resp = ec2.describe_vpcs()
+        # TODO: support more than one VPC..
+        vpc = resp['Vpcs'][0]
+        sg_name = cluster_name
+        sg = ec2.create_security_group(
+            GroupName=sg_name,
+            VpcId=vpc['VpcId'],
+            Description=description
+        )
+
+        ec2.create_tags(
+            Resources=[sg['GroupId']],
+            Tags=[{'Key': 'Name', 'Value': sg_name}]
+        )
+        ip_permissions = []
+        if use_dmz:
+            # NOTE: we need to allow ALL public IPs (from all regions)
+            for ip in itertools.chain(*node_ips.values()):
+                ingress_rule = {
+                    'IpProtocol': 'tcp',
+                    'FromPort': 7001,  # port range: From-To
+                    'ToPort':   7001,
+                    'IpRanges': [
+                        {
+                            'CidrIp': '{}/32'.format(ip['PublicIp'])
+                        }
+                    ]
+                }
+                ip_permissions.append(ingress_rule)
+        # if internal subnets are used we just allow access from
+        # within the SG, which we also need in multi-region setup
+        # (for the nodetool?)
+        self_ingress_rule = {
+            'IpProtocol': '-1',
+            'UserIdGroupPairs': [{'GroupId': sg['GroupId']}]
+        }
+        ip_permissions.append(self_ingress_rule)
+
+        # if we can find the Odd security group, authorize SSH access from it
+        try:
+            odd_sg = find_security_group_by_name(ec2, 'Odd (SSH Bastion Host)')
+            odd_ingress_rule = {
+                'IpProtocol': 'tcp',
+                'FromPort': 22,  # port range: From-To
+                'ToPort': 22,
+                'UserIdGroupPairs': [{
+                    'GroupId': odd_sg['GroupId']
+                }]
+            }
+            ip_permissions.append(odd_ingress_rule)
+        except ClientError:
+            msg = "No Odd host in region {}, skipping Security Group rule."
+            info(msg.format(region))
+            pass
+
+        ec2.authorize_security_group_ingress(
+            GroupId=sg['GroupId'],
+            IpPermissions=ip_permissions
+        )
+
+        return sg
+
+
+def extend_security_group(region: str, sg: dict, other_region_ips: list):
+    with Action('Updating Security Group in {}..'.format(region)):
+        ip_permissions = [
+            {
+                'IpProtocol': 'tcp',
+                'FromPort': 7001,  # port range: From-To
+                'ToPort':   7001,
+                'IpRanges': [
+                    {
+                        'CidrIp': '{}/32'.format(ip['PublicIp'])
+                    }
+                ]
+            }
+            for ip in other_region_ips
+        ]
+
+        ec2 = ec2_client(region)
+        ec2.authorize_security_group_ingress(
+            GroupId=sg['GroupId'],
+            IpPermissions=ip_permissions
+        )
+
+
 def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
-                          result: dict) -> dict:
+                          result: dict):
     '''
     Allow traffic between regions (or within a VPC, if `use_dmz' is False)
     '''
-    description = 'Allow Cassandra nodes to talk to each other on port 7001'
     for region, ips in node_ips.items():
-        with Action('Configuring Security Group in {}..'.format(region)):
-            ec2 = ec2_client(region)
-            resp = ec2.describe_vpcs()
-            # TODO: support more than one VPC..
-            vpc = resp['Vpcs'][0]
-            sg_name = cluster_name
-            sg = ec2.create_security_group(
-                GroupName=sg_name,
-                VpcId=vpc['VpcId'],
-                Description=description
-            )
-            result[region] = sg
+        result[region] = create_security_group(
+            region, ips, use_dmz, cluster_name, node_ips
+        )
 
-            ec2.create_tags(
-                Resources=[sg['GroupId']],
-                Tags=[{'Key': 'Name', 'Value': sg_name}]
-            )
-            ip_permissions = []
-            if use_dmz:
-                # NOTE: we need to allow ALL public IPs (from all regions)
-                for ip in itertools.chain(*node_ips.values()):
-                    ingress_rule = {
-                        'IpProtocol': 'tcp',
-                        'FromPort': 7001,  # port range: From-To
-                        'ToPort':   7001,
-                        'IpRanges': [{
-                            'CidrIp': '{}/32'.format(ip['PublicIp'])
-                        }]
-                    }
-                    ip_permissions.append(ingress_rule)
-            # if internal subnets are used we just allow access from
-            # within the SG, which we also need in multi-region setup
-            # (for the nodetool?)
-            self_ingress_rule = {
-                'IpProtocol': '-1',
-                'UserIdGroupPairs': [{'GroupId': sg['GroupId']}]
-            }
-            ip_permissions.append(self_ingress_rule)
 
-            # if we can find the Odd security group, authorize SSH access from it
-            try:
-                odd_sg = find_security_group_by_name(ec2, 'Odd (SSH Bastion Host)')
-                odd_ingress_rule = {
-                    'IpProtocol': 'tcp',
-                    'FromPort': 22,  # port range: From-To
-                    'ToPort': 22,
-                    'UserIdGroupPairs': [{
-                        'GroupId': odd_sg['GroupId']
-                    }]
-                }
-                ip_permissions.append(odd_ingress_rule)
-            except ClientError:
-                msg = "No Odd host in region {}, skipping Security Group rule."
-                info(msg.format(region))
-                pass
-
-            ec2.authorize_security_group_ingress(
-                GroupId=sg['GroupId'],
-                IpPermissions=ip_permissions
-            )
+def get_public_ips_from_sg(sg: dict) -> list:
+    result = []
+    for ip in sg['IpPermissions']:
+        if ip['IpProtocol'] == 'tcp' and \
+           ip['FromPort'] == 7001 and ip['ToPort'] == 7001:
+            for ip_range in ip['IpRanges']:
+                cidr_ip = ip_range.get('CidrIp')
+                if cidr_ip and cidr_ip.endswith('/32'):
+                    result.append({
+                        'PublicIp': cidr_ip.replace('/32', '')
+                    })
+    return result
 
 
 def find_taupage_amis(regions: list) -> dict:
@@ -709,9 +756,7 @@ def create_cluster(options: dict):
 
 
 def extend_cluster(options: dict):
-    options['regions'] = [options['region']]
-
-    ec2 = ec2_client(options['region'])
+    ec2 = ec2_client(options['from_region'])
     running_instances = [
         i
         for i in list_instances(ec2, options['cluster_name'])
@@ -720,7 +765,7 @@ def extend_cluster(options: dict):
     if not running_instances:
         msg = "Could not find any running EC2 instances for {} in {}".format(
             options['cluster_name'],
-            options['region']
+            options['from_region']
         )
         raise click.UsageError(msg)
 
@@ -731,22 +776,25 @@ def extend_cluster(options: dict):
     # List of IP addresses by region
     node_ips = collections.defaultdict(list)
 
+    # Mapping of region name to the Security Group
+    security_groups = {}
+
     try:
         # TODO: get it from a running instance details?
-        taupage_amis = find_taupage_amis(options['regions'])
+        taupage_amis = find_taupage_amis([options['to_region']])
 
         subnets = get_subnets(
             'dmz-' if options['use_dmz'] else 'internal-',
-            options['regions']
+            [options['to_region']]
         )
         allocate_ip_addresses(
-            subnets, options['cluster_size'], node_ips,
+            subnets, options['ring_size'], node_ips,
             take_elastic_ips=options['use_dmz']
         )
 
         if options['sns_topic'] or options['sns_email']:
             alarm_topics = setup_sns_topics_for_alarm(
-                options['regions'],
+                [options['to_region']],
                 options['sns_topic'],
                 options['sns_email']
             )
@@ -762,11 +810,28 @@ def extend_cluster(options: dict):
 
         cluster_sg = find_security_group_by_name(ec2, options['cluster_name'])
         security_groups = {
-            options['region']: cluster_sg
+            options['from_region']: cluster_sg
         }
+        if options['to_region'] != options['from_region']:
+            all_ips = node_ips.copy()
+            all_ips[options['from_region']] = get_public_ips_from_sg(cluster_sg)
+
+            security_groups[options['to_region']] = create_security_group(
+                options['to_region'],
+                node_ips[options['to_region']],
+                options['use_dmz'],
+                options['cluster_name'],
+                all_ips
+            )
+            # TODO: no rollback for now
+            extend_security_group(
+                options['from_region'],
+                cluster_sg,
+                node_ips[options['to_region']]
+            )
 
         # We should have up to 3 seeds nodes per DC
-        seed_count = min(options['cluster_size'], 3)
+        seed_count = min(options['ring_size'], 3)
         seed_nodes = pick_seed_node_ips(node_ips, seed_count)
 
         options = dict(
@@ -784,7 +849,10 @@ def extend_cluster(options: dict):
         new_seeds = list_all_seed_node_ips(seed_nodes)
         env['SEEDS'] = "{},{}".format(','.join(new_seeds), env['SEEDS'])
 
-        instance_profile = get_instance_profile(options['cluster_name'])
+        instance_profile = ensure_instance_profile(options['cluster_name'])
+
+        # we only launch instances in the target region:
+        options['regions'] = [options['to_region']]
 
         options = dict(
             options,
@@ -801,16 +869,23 @@ def extend_cluster(options: dict):
         # TODO: make sure all seed nodes are up
         launch_normal_nodes(options)
 
-        print_success_message(options)
-
     except:
         print_failure_message()
+
+        if options['to_region'] != options['from_region']:
+            region = options['to_region']
+            sg = security_groups.get(region)
+            if sg:
+                info('Cleaning up security group: {}'.format(sg['GroupId']))
+                ec2 = ec2_client(region)
+                ec2.delete_security_group(GroupId=sg['GroupId'])
 
         if options['use_dmz']:
             for region, ips in node_ips.items():
                 ec2 = ec2_client(region)
                 for ip in ips:
-                    info('Releasing IP address: {}'.format(ip['PublicIp']))
-                    ec2.release_address(AllocationId=ip['AllocationId'])
+                    if 'AllocationId' in ip:
+                        info('Releasing IP address: {}'.format(ip['PublicIp']))
+                        ec2.release_address(AllocationId=ip['AllocationId'])
 
         raise

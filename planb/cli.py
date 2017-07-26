@@ -83,9 +83,10 @@ def create(regions: list,
 
 
 @cli.command()
-@click.option('--region', type=str, required=True)
+@click.option('--from-region', type=str, required=True)
+@click.option('--to-region', type=str, required=True)
 @click.option('--cluster-name', type=str, required=True)
-@click.option('--cluster-size', default=3, type=int, help='number of nodes per region, default: 3')
+@click.option('--ring-size', type=int, required=True)
 @click.option('--dc-suffix', type=str, required=True)
 @click.option('--num-tokens', default=256, type=int, help='number of virtual nodes per node, default: 256')
 @click.option('--instance-type', default='t2.medium', help='default: t2.medium')
@@ -94,16 +95,17 @@ def create(regions: list,
 @click.option('--volume-iops', default=100, type=int, help='for type io1, default: 100')
 @click.option('--no-termination-protection', is_flag=True, default=False)
 @click.option('--use-dmz', is_flag=True, default=False, help='deploy into DMZ subnets using Public IP addresses')
-#@click.option('--hosted-zone', help='create SRV records in this Hosted Zone')
+@click.option('--hosted-zone', help='create SRV records in this Hosted Zone')
 #@click.option('--scalyr-key')
 @click.option('--artifact-name', help='Pierone artifact name to use (default: planb-cassandra-3.0)')
 @click.option('--docker-image', help='Docker image to use (default: latest planb-cassandra-3.0)')
 @click.option('--environment', '-e', multiple=True)
 @click.option('--sns-topic', help=sns_topic_help)
 @click.option('--sns-email', help=sns_email_help)
-def extend(region: str,
+def extend(from_region: str,
+           to_region: str,
            cluster_name: str,
-           cluster_size: int,
+           ring_size: int,
            dc_suffix: str,
            num_tokens: int,
            instance_type: str,
@@ -112,13 +114,16 @@ def extend(region: str,
            volume_iops: int,
            no_termination_protection: bool,
            use_dmz: bool,
-#           hosted_zone: str,
+           hosted_zone: str,
 #           scalyr_key: str,
            artifact_name: str,
            docker_image: str,
            environment: list,
            sns_topic: str,
            sns_email: str):
+
+    if from_region != to_region and not(use_dmz):
+        raise click.UsageError('Extending to a new region requires --use-dmz')
 
     extend_cluster(options=locals())
 
