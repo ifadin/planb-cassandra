@@ -13,7 +13,7 @@ import os
 from .common import ec2_client, \
     dump_dict_as_file, load_dict_from_file, \
     dump_user_data_for_taupage, list_instances, \
-    override_ephemeral_block_devices, \
+    override_ephemeral_block_devices, get_user_data, \
     setup_sns_topics_for_alarm, create_auto_recovery_alarm, \
     ensure_instance_profile
 
