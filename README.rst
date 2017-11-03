@@ -29,8 +29,8 @@ Prerequisites
 * Python dependencies (``sudo pip3 install -r requirements.txt``)
 * Java 8 with ``keytool`` in your ``PATH`` (required to generate SSL certificates)
 * Latest Stups tooling installed and configured
-* You have created a dedicated AWS IAM user for autorecovery with non temporary credentials
-  This policy document for the autorecovery user should look like the following::
+* You have created a dedicated AWS IAM user for auto-recovery.  The policy
+  document for this user should look like the following::
 
     {
         "Version": "2012-10-17",
@@ -50,15 +50,22 @@ Prerequisites
             }
         ]
     }
-* You have a ``planb_autorecovery`` section in your AWS credentials file with the credentials
-  of the autorecovery user::
+* You have a ``planb_autorecovery`` section in your AWS credentials file
+  (``~/.aws/credentials``) with the access key of the auto-recovery user::
 
     [planb_autorecovery]
     aws_access_key_id = THEKEYID
     aws_secret_access_key = THESECRETKEY
 
-  These credentials are used to create the autorecovery alarm. The recovery action is performed
-  by this dedicated autorecovery user.
+  These credentials are only used to create the auto-recovery alarm.  When
+  triggered by the failing system status check, the recovery action is
+  performed by this dedicated user.
+
+  .. note::
+
+     The access keys for the auto-recovery user can be rotated or made
+     inactive at any time, without impacting its ability to perform the
+     recovery action.  The user still needs to be there, however.
 
 
 Usage
@@ -124,18 +131,10 @@ If you use the Hosted Zone parameter, a full name specification is
 required e.g.: ``--hosted-zone myzone.example.com.`` (note the
 trailing dot.)
 
-It might be required to update the Security Group(s) of the Cassandra
-cluster to allow SSH access (TCP port 22, Jolokia Port 8778) from Odd_
-host.  After that is done, you can use `Più`_ to get SSH access and
-create your application user and the first schema:
-
-.. code-block:: bash
-
-    $ piu 172.31.1.1 "initial Cassandra setup"  # replace private IP
-    $ docker exec -it taupageapp bash
-    (docker)$ cqlsh -u admin -p $ADMIN_PASSWORD
-    cqlsh> CREATE USER myuser WITH PASSWORD '...' NOSUPERUSER;
-    cqlsh> CREATE SCHEMA myschema WITH replication = {'class': 'NetworkTopologyStrategy', 'eu-west': 3, 'eu-central': 3};
+After the create command finishes successfully, follow the on-screen
+instructions to create the admin superuser, set replication factors for
+system_auth keyspace and then create your application user and the data
+keyspace.
 
 The generated administrator password is available inside the docker
 container in an environment variable ``ADMIN_PASSWORD``.
@@ -299,6 +298,9 @@ following these steps:
 
 #. Make sure that under 'Instance Details' the setting 'Auto-assign
    Public IP' is set to 'Disable'.
+
+#. **Review UserData.**  Make sure that ``AUTO_BOOTSTRAP`` environment
+   variable is set to ``true`` or not present.
 
 #. At the 'Add Storage' step add a data volume for the new node.  It
    should use ``/dev/xvdf`` as the device name.  EBS encryption is not

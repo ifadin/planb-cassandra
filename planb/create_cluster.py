@@ -19,7 +19,8 @@ import click
 from botocore.exceptions import ClientError
 from clickclick import Action, info
 
-from .common import ec2_client, list_instances, \
+
+from .common import boto_client, list_instances, \
     override_ephemeral_block_devices, \
     get_user_data, dump_user_data_for_taupage, \
     setup_sns_topics_for_alarm, create_auto_recovery_alarm, \
@@ -128,9 +129,18 @@ def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
     Allow traffic between regions (or within a VPC, if `use_dmz' is False)
     '''
     for region, ips in node_ips.items():
-        result[region] = create_security_group(
-            region, ips, use_dmz, cluster_name, node_ips
-        )
+        with Action('Configuring Security Group in {}..'.format(region)):
+            ec2 = boto_client('ec2', region)
+            resp = ec2.describe_vpcs()
+            # TODO: support more than one VPC..
+            vpc = resp['Vpcs'][0]
+            sg_name = cluster_name
+            sg = ec2.create_security_group(
+                GroupName=sg_name,
+                VpcId=vpc['VpcId'],
+                Description=description
+            )
+            result[region] = sg
 
 
 def get_public_ips_from_sg(sg: dict) -> list:
@@ -295,7 +305,7 @@ def allocate_ip_addresses(
     '''
     for region, subnets in region_subnets.items():
         with Action('Allocating IP addresses in {}..'.format(region)) as act:
-            ec2 = ec2_client(region)
+            ec2 = boto_client('ec2', region)
 
             for ip in generate_private_ip_addresses(ec2, subnets, cluster_size):
                 address = {'PrivateIp': ip}
@@ -333,7 +343,7 @@ def get_subnets(prefix_filter: str, regions: list) -> dict:
     '''
     subnets = collections.defaultdict(list)
     for region in regions:
-        ec2 = ec2_client(region)
+        ec2 = boto_client('ec2', region)
         resp = ec2.describe_subnets()
         sorted_subnets = sorted(
             resp['Subnets'],
@@ -357,7 +367,7 @@ def make_dns_records(region: str, ips: list) -> list:
 
 
 def setup_dns_records(cluster_name: str, hosted_zone: str, node_ips: dict):
-    r53 = boto3.client('route53')
+    r53 = boto_client('route53')
 
     zone = None
     zones = r53.list_hosted_zones_by_name(DNSName=hosted_zone)
@@ -426,9 +436,7 @@ def generate_taupage_user_data(options: dict) -> str:
         },
         'environment': {
             'CLUSTER_NAME': options['cluster_name'],
-            'CLUSTER_SIZE': options['cluster_size'],
             'NUM_TOKENS': options['num_tokens'],
-            'REGIONS': ' '.join(options['regions']),
             'SUBNET_TYPE': 'dmz' if options['use_dmz'] else 'internal',
             'SEEDS': ','.join(all_seeds),
             'KEYSTORE': str(keystore_base64, 'UTF-8'),
@@ -483,7 +491,7 @@ def launch_instance(region: str, ip: dict, ami: object, subnet: dict,
         region
     )
     with Action(msg) as act:
-        ec2 = ec2_client(region)
+        ec2 = boto_client('ec2', region)
 
         mappings = ami.block_device_mappings
         block_devices = override_ephemeral_block_devices(mappings)
@@ -589,23 +597,53 @@ def launch_normal_nodes(options: dict):
 
 def print_success_message(options: dict):
     info('Cluster initialization completed successfully!')
+
+    regions_list = ' '.join(options['regions'])
+
+    # prepare alter keyspace params in the format: 'eu-central': N [, ...]
+    dc_list = ', '.join([
+        "'{}': {}".format(re.sub('-[0-9]+$', '', r), options['cluster_size'])
+        for r in options['regions']
+    ])
+
     sys.stdout.write('''
 The Cassandra cluster {cluster_name} was created with {cluster_size} nodes
 in each of the following AWS regions: {regions_list}
 
-You can now login to any of the cluster nodes with the superuser
-account using the following command from inside the docker container:
+You might need to update the Security Group named {cluster_name}
+(in all regions!) to allow access to Cassandra from the Odd host (port 22),
+from your application (port 9042) and optionally to allow access to Jolokia
+(port 8778) and/or Prometheus Node Exporter (port 9100) from your monitoring
+tool.
+
+You should now login to any of the cluster nodes to change the replication
+settings of system_auth keyspace and to create the admin superuser, using the
+following commands:
+
+$ docker exec -ti taupageapp bash
+
+(docker)$ cqlsh -u cassandra -p cassandra \\
+  -e "ALTER KEYSPACE system_auth WITH replication = {{
+        'class': 'NetworkTopologyStrategy', {dc_list}
+      }};
+      CREATE USER admin WITH PASSWORD '$ADMIN_PASSWORD' SUPERUSER;"
+
+Then login with the newly created admin account and disable the default
+superuser account:
 
 (docker)$ cqlsh -u admin -p $ADMIN_PASSWORD
 
-From there you can create non-superuser roles and otherwise configure
-the cluster.
+cqlsh> ALTER USER cassandra WITH PASSWORD '{random_pw}' NOSUPERUSER;
 
-You might also need to update the Security Groups named {cluster_name}
-(in all regions!) to allow access to Cassandra from your application (port 9042)
-and optionally to allow access to Jolokia (port 8778) and/or
-Prometheus Node Exporter (port 9100) from your monitoring tool.
-'''.format(**options, regions_list=' '.join(options['regions'])))
+You can then also create non-superuser application roles and data keyspace(s).
+
+In general, follow the documentation on setting up authentication, depending
+on your Cassandra version:
+
+  http://docs.datastax.com/en/cassandra/3.0/cassandra/configuration/secureConfigNativeAuth.html
+  http://docs.datastax.com/en/cassandra/2.1/cassandra/security/security_config_native_authenticate_t.html
+'''.format(**options, regions_list=regions_list, dc_list=dc_list,
+           random_pw=generate_password()))
 
 
 def print_failure_message():
@@ -740,13 +778,13 @@ def create_cluster(options: dict):
         # Undo stack sounds like a natural choice.
         #
         for region, sg in security_groups.items():
-            ec2 = ec2_client(region)
+            ec2 = boto_client('ec2', region)
             info('Cleaning up security group: {}'.format(sg['GroupId']))
             ec2.delete_security_group(GroupId=sg['GroupId'])
 
         if options['use_dmz']:
             for region, ips in node_ips.items():
-                ec2 = ec2_client(region)
+                ec2 = boto_client('ec2', region)
                 for ip in ips:
                     info('Releasing IP address: {}'.format(ip['PublicIp']))
                     ec2.release_address(AllocationId=ip['AllocationId'])
