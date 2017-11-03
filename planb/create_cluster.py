@@ -36,7 +36,7 @@ def create_security_group(region: str, ips: list, use_dmz: bool,
                           cluster_name: str, node_ips: dict) -> dict:
     description = 'Allow Cassandra nodes to talk to each other on port 7001'
     with Action('Creating Security Group in {}..'.format(region)):
-        ec2 = ec2_client(region)
+        ec2 = boto_client('ec2', region)
         resp = ec2.describe_vpcs()
         # TODO: support more than one VPC..
         vpc = resp['Vpcs'][0]
@@ -116,7 +116,7 @@ def extend_security_group(region: str, sg: dict, other_region_ips: list):
             for ip in other_region_ips
         ]
 
-        ec2 = ec2_client(region)
+        ec2 = boto_client('ec2', region)
         ec2.authorize_security_group_ingress(
             GroupId=sg['GroupId'],
             IpPermissions=ip_permissions
@@ -124,23 +124,14 @@ def extend_security_group(region: str, sg: dict, other_region_ips: list):
 
 
 def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
-                          result: dict):
+                          result: dict) -> dict:
     '''
     Allow traffic between regions (or within a VPC, if `use_dmz' is False)
     '''
     for region, ips in node_ips.items():
-        with Action('Configuring Security Group in {}..'.format(region)):
-            ec2 = boto_client('ec2', region)
-            resp = ec2.describe_vpcs()
-            # TODO: support more than one VPC..
-            vpc = resp['Vpcs'][0]
-            sg_name = cluster_name
-            sg = ec2.create_security_group(
-                GroupName=sg_name,
-                VpcId=vpc['VpcId'],
-                Description=description
-            )
-            result[region] = sg
+        result[region] = create_security_group(
+            region, ips, use_dmz, cluster_name, node_ips
+        )
 
 
 def get_public_ips_from_sg(sg: dict) -> list:
@@ -793,7 +784,7 @@ def create_cluster(options: dict):
 
 
 def extend_cluster(options: dict):
-    ec2 = ec2_client(options['from_region'])
+    ec2 = boto_client('ec2', options['from_region'])
     running_instances = [
         i
         for i in list_instances(ec2, options['cluster_name'])
@@ -914,12 +905,12 @@ def extend_cluster(options: dict):
             sg = security_groups.get(region)
             if sg:
                 info('Cleaning up security group: {}'.format(sg['GroupId']))
-                ec2 = ec2_client(region)
+                ec2 = boto_client('ec2', region)
                 ec2.delete_security_group(GroupId=sg['GroupId'])
 
         if options['use_dmz']:
             for region, ips in node_ips.items():
-                ec2 = ec2_client(region)
+                ec2 = boto_client('ec2', region)
                 for ip in ips:
                     if 'AllocationId' in ip:
                         info('Releasing IP address: {}'.format(ip['PublicIp']))
