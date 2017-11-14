@@ -32,6 +32,7 @@ def cli(debug: bool):
 @click.option('--volume-iops', default=100, type=int, help='for type io1, default: 100')
 @click.option('--no-termination-protection', is_flag=True, default=False)
 @click.option('--use-dmz', is_flag=True, default=False, help='deploy into DMZ subnets using Public IP addresses')
+@click.option('--use-root', is_flag=True, default=False, help='start container as root')
 @click.option('--hosted-zone', help='create SRV records in this Hosted Zone')
 @click.option('--scalyr-key')
 @click.option('--artifact-name', help='Pierone artifact name to use (default: planb-cassandra-3.0)')
@@ -49,6 +50,7 @@ def create(regions: list,
            volume_iops: int,
            no_termination_protection: bool,
            use_dmz: bool,
+           use_root: bool,
            hosted_zone: str,
            scalyr_key: str,
            artifact_name: str,

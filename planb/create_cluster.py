@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 
+import base64
 import collections
 import itertools
-import tempfile
-import requests
-import netaddr
-import random
-import string
-import base64
-import time
-import sys
-import re
 import os
+import random
+import re
+import string
+import sys
+import tempfile
+import time
 from subprocess import check_call, call
 
 import boto3
 import click
+import netaddr
+import requests
 from botocore.exceptions import ClientError
 from clickclick import Action, info
 
@@ -55,7 +55,7 @@ def setup_security_groups(use_dmz: bool, cluster_name: str, node_ips: dict,
                     ingress_rule = {
                         'IpProtocol': 'tcp',
                         'FromPort': 7001,  # port range: From-To
-                        'ToPort':   7001,
+                        'ToPort': 7001,
                         'IpRanges': [{
                             'CidrIp': '{}/32'.format(ip['PublicIp'])
                         }]
@@ -121,7 +121,7 @@ def find_taupage_amis(regions: list) -> dict:
 
 def get_latest_docker_image_version(artifact_name):
     url = 'https://registry.opensource.zalan.do/teams/stups/artifacts/{}/tags' \
-          .format(artifact_name)
+        .format(artifact_name)
     return requests.get(url).json()[-1]['name']
 
 
@@ -186,14 +186,12 @@ def generate_certificate(cluster_name: str):
 
 
 class IpAddressPoolDepletedException(Exception):
-
     def __init__(self, cidr_block: str):
         msg = "Pool of unused IP addresses depleted in subnet: {}".format(cidr_block)
         super(IpAddressPoolDepletedException, self).__init__(msg)
 
 
 def generate_private_ip_addresses(ec2: object, subnets: list, cluster_size: int):
-
     def try_next_address(ips, subnet):
         try:
             return str(next(ips))
@@ -395,6 +393,9 @@ def generate_taupage_user_data(options: dict) -> str:
     if options['environment']:
         data['environment'].update(options['environment'])
 
+    if options['use_root']:
+        data['root'] = options['use_root']
+
     return data
 
 
@@ -418,7 +419,6 @@ def create_tagged_volume(ec2: object, options: dict, zone: str, name: str):
 
 def launch_instance(region: str, ip: dict, ami: object, subnet: dict,
                     security_group_id: str, is_seed: bool, options: dict):
-
     node_type = 'SEED' if is_seed else 'NORMAL'
     msg = 'Launching {} node {} in {}..'.format(
         node_type,
@@ -454,7 +454,7 @@ def launch_instance(region: str, ip: dict, ami: object, subnet: dict,
             PrivateIpAddress=ip['PrivateIp'],
             BlockDeviceMappings=block_devices,
             IamInstanceProfile={'Arn': options['instance_profile']['Arn']},
-            DisableApiTermination=not(options['no_termination_protection'])
+            DisableApiTermination=not (options['no_termination_protection'])
         )
         instance = resp['Instances'][0]
         instance_id = instance['InstanceId']
@@ -605,7 +605,7 @@ def validate_artifact_version(options: dict) -> dict:
             options['artifact_name'] = 'planb-cassandra-3.0'
         image_version = get_latest_docker_image_version(options['artifact_name'])
         docker_image = 'registry.opensource.zalan.do/stups/{}:{}' \
-                       .format(options['artifact_name'], image_version)
+            .format(options['artifact_name'], image_version)
         info('Using docker image: {}'.format(docker_image))
     else:
         if options['artifact_name']:
