@@ -1,3 +1,6 @@
+.idea
+.idea/
+
 scm-source.json
 test_keystore.base64
 test_truststore.base64

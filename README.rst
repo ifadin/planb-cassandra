@@ -109,6 +109,7 @@ Available options are:
 --volume-iops                Number of provisioned IOPS for the volumes, used only for volume type of io1.  Default: 100 (when applicable).
 --no-termination-protection  Don't protect EC2 instances from accidental termination.  Useful for testing and development.
 --use-dmz                    Deploy the cluster into DMZ subnets using Public IPs (required for multi-region setup).
+--use-root                   Start container as a root user
 --hosted-zone                Specify this to create SRV records for every region, listing all nodes' private IP addresses in that region.  This is optional.
 --scalyr-key                 Write Logs API Key for Scalyr (optional).
 --artifact-name              Override Pierone artifact name.  Default: planb-cassandra-3.0
