@@ -291,4 +291,7 @@ JVM_OPTS="$JVM_OPTS $MX4J_ADDRESS"
 JVM_OPTS="$JVM_OPTS $MX4J_PORT"
 JVM_OPTS="$JVM_OPTS $JVM_EXTRA_OPTS"
 
+# zalando-stups/docker-openjdk helper script
+JVM_OPTS="$JVM_OPTS $(java-dynamic-memory-opts)"
+
 cassandra_storagedir="${CASSANDRA_DATA_DIR}/data"
