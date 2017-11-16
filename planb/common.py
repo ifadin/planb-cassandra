@@ -201,6 +201,7 @@ def create_instance_profile(cluster_name: str, with_snapshots: bool):
         "Effect": "Allow",
         "Action": [
             "ec2:CreateSnapshot",
+            "ec2:DeleteSnapshot",
             "ec2:DescribeSnapshots",
             "ec2:CreateTags"
         ],
