@@ -1,10 +1,11 @@
-import re
-import click
 import logging
+import re
+
+import click
 
 from .common import boto_client, list_instances
-from .show_cluster import show_instances
 from .create_cluster import create_cluster
+from .show_cluster import show_instances
 from .update_cluster import update_cluster
 
 
@@ -40,6 +41,8 @@ def cli(debug: bool):
 @click.option('--environment', '-e', multiple=True)
 @click.option('--sns-topic', help='SNS topic name to send Auto-Recovery notifications to')
 @click.option('--sns-email', help='Email address to subscribe to Auto-Recovery SNS topic')
+@click.option('--with-backups', is_flag=True, default=False, help='Makes EBS volumes backups every day')
+@click.option('--backups-retention', type=int, default=14, show_default=True, help='EBS backups retention time in days')
 def create(regions: list,
            cluster_name: str,
            cluster_size: int,
@@ -57,8 +60,9 @@ def create(regions: list,
            docker_image: str,
            environment: list,
            sns_topic: str,
-           sns_email: str):
-
+           sns_email: str,
+           with_backups: bool,
+           backups_retention: int):
     if not cluster_name:
         raise click.UsageError('You must specify the cluster name')
 
@@ -74,7 +78,7 @@ def create(regions: list,
     if not regions:
         raise click.UsageError('Please specify at least one region')
 
-    if len(regions) > 1 and not(use_dmz):
+    if len(regions) > 1 and not (use_dmz):
         raise click.UsageError('Multi-region deployment requires --use-dmz')
 
     create_cluster(options=locals())
@@ -103,8 +107,7 @@ def update(cluster_name: str,
            instance_type: str,
            sns_topic: str,
            sns_email: str):
-
-    if not(docker_image or taupage_ami_id):
+    if not (docker_image or taupage_ami_id):
         msg = "Please specify at least one of --docker-image or --taupage-ami-id"
         raise click.UsageError(msg)
 

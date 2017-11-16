@@ -396,6 +396,12 @@ def generate_taupage_user_data(options: dict) -> str:
     if options['use_root']:
         data['root'] = options['use_root']
 
+    if options['with_backups']:
+        data['root'] = True
+        data['environment']['WITH_BACKUPS'] = True
+        if options['backups_retention']:
+            data['environment']['BACKUP_RETENTION_DAYS'] = options['backups_retention']
+
     return data
 
 
@@ -685,7 +691,7 @@ def create_cluster(options: dict):
         )
         user_data = generate_taupage_user_data(options)
 
-        instance_profile = ensure_instance_profile(options['cluster_name'])
+        instance_profile = ensure_instance_profile(options['cluster_name'], options['with_backups'])
 
         options = dict(
             options,

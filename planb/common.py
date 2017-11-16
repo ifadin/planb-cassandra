@@ -1,15 +1,15 @@
+import copy
+import json
+import os
+import time
+from datetime import datetime
+
 import boto3
 import botocore
 import yaml
-import json
-import copy
-import time
-import os
-from datetime import datetime
 
 
 class SessionRefreshingBotoClient(object):
-
     def __init__(self, profile_name: str, service_name: str, region_name: str):
         self._profile_name = profile_name
         self._service_name = service_name
@@ -35,6 +35,7 @@ class SessionRefreshingBotoClient(object):
                             self._refresh_session()
                             continue
                     raise
+
         return wrapper
 
     def __getattr__(self, name: str):
@@ -77,9 +78,9 @@ def dump_user_data_for_taupage(user_data: dict) -> str:
 
 def list_instances(ec2: object, cluster_name: str):
     resp = ec2.describe_instances(Filters=[{
-            'Name': 'tag:Name',
-            'Values': [cluster_name]
-        }])
+        'Name': 'tag:Name',
+        'Values': [cluster_name]
+    }])
     return sum([r['Instances'] for r in resp['Reservations']], [])
 
 
@@ -104,7 +105,7 @@ def override_ephemeral_block_devices(mappings: dict) -> dict:
 
             root_ebs = bd['Ebs']
             if 'Encrypted' in root_ebs:
-                del(root_ebs['Encrypted'])
+                del (root_ebs['Encrypted'])
 
             block_devices.append(bd)
         else:
@@ -117,7 +118,7 @@ def override_ephemeral_block_devices(mappings: dict) -> dict:
 
 
 def setup_sns_topics_for_alarm(regions: list, topic_name: str, email: str) -> list:
-    if not(topic_name):
+    if not (topic_name):
         topic_name = 'planb-cassandra-system-event'
 
     result = {}
@@ -173,7 +174,7 @@ def get_instance_profile(cluster_name: str) -> dict:
         raise e
 
 
-def create_instance_profile(cluster_name: str):
+def create_instance_profile(cluster_name: str, with_snapshots: bool):
     profile_name = make_instance_profile_name(cluster_name)
     role_name = 'role-{}'.format(cluster_name)
     policy_name = 'policy-{}-datavolume'.format(cluster_name)
@@ -196,10 +197,20 @@ def create_instance_profile(cluster_name: str):
         }"""
     )
 
-    policy_document = """{
+    snapshot_policy = """,{
+        "Effect": "Allow",
+        "Action": [
+            "ec2:CreateSnapshot",
+            "ec2:DescribeSnapshots",
+            "ec2:CreateTags"
+        ],
+        "Resource": "*"
+    }""" if with_snapshots else ''
+
+    policy_document = '''{{
         "Version": "2012-10-17",
         "Statement": [
-            {
+            {{
                 "Effect": "Allow",
                 "Action": [
                     "ec2:DescribeTags",
@@ -208,9 +219,10 @@ def create_instance_profile(cluster_name: str):
                     "ec2:AttachVolume"
                 ],
                 "Resource": "*"
-            }
+            }}{snapshot_policy}
         ]
-    }"""
+    }}'''.format(snapshot_policy=snapshot_policy)
+
     iam.put_role_policy(
         RoleName=role_name,
         PolicyName=policy_name,
@@ -232,8 +244,8 @@ def create_instance_profile(cluster_name: str):
     return profile['InstanceProfile']
 
 
-def ensure_instance_profile(cluster_name: str):
+def ensure_instance_profile(cluster_name: str, with_snapshots: bool):
     profile = get_instance_profile(cluster_name)
     if profile is None:
-        profile = create_instance_profile(cluster_name)
+        profile = create_instance_profile(cluster_name, with_snapshots)
     return profile
